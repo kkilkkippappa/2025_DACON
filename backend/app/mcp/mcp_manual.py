@@ -11,5 +11,5 @@ mcp = FastMCP("manual_mcp")
 def get_person_mannual():
     try:
         pass
-    catch:
+    except:
         return {"error": "Failed to get manual from LLM."}

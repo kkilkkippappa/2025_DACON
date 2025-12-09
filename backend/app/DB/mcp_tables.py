@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import JSON, Column, DateTime, Integer, String, Text
 
-from .config import Base
+from .db_config import Base
 
 
 class ProcessingQueueTable(Base):

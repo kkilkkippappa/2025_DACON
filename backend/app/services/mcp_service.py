@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy import func
 
-from app.DB.config import session_scope
+from app.DB.db_config import session_scope
 from app.DB.mcp_tables import (
     DeadLetterQueueTable,
     ProcessingQueueDTO,

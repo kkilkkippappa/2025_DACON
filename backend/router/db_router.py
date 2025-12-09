@@ -5,7 +5,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.DB.config import get_db
+from app.DB.db_config import get_db
 from app.DB.table_sensor import SensorTable, SensorDTO
 
 router = APIRouter(prefix="/db", tags=["database"])
@@ -71,3 +71,12 @@ def create_sensor(payload: SensorDTO, db: Session = Depends(get_db)):
         ) from exc
 
     return jsonable_encoder(SensorDTO.model_validate(sensor))
+
+#db - fastAPI 간 DB 데이터 show 테스트.
+@router.get('/test')
+def get_tese_data(db: Session = Depends(get_db)):
+    res = db.query(SensorTable).first()
+    if not res :
+        raise HTTPException(status_code=404, detail="No sensor data for testing here")
+    return SensorDTO.model_validate(res)
+

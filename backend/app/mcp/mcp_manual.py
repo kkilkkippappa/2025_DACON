@@ -84,7 +84,8 @@ def get_person_mannual(manual_path: str, tags: Optional[List[str]] = None) -> Di
         return {"error": f"알 수 없는 오류: {exc}"}
 
 
-@mcp.resource("manuals")
+# Resources require fully qualified URIs, so use a custom manual:// scheme to satisfy Pydantic.
+@mcp.resource("manual://manuals")
 def list_manuals() -> Dict[str, List[str]]:
     """메뉴얼 디렉터리 구조를 반환한다."""
     repo = get_manual_repository()

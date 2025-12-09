@@ -7,7 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Column, DateTime, Integer, Numeric
 
-from .config import Base
+from .db_config import Base
 
 
 class SensorTable(Base):

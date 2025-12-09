@@ -1,157 +1,195 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 
+/** @typedef {'warning' | 'alarm'} AlertType */
+
 /**
  * @typedef {Object} Alert
- * @property {string} id - 고유 식별자
- * @property {string} occurredAt - 발생일자 (YYYY-MM-DD HH:mm:ss 형식)
- * @property {'warning'|'alarm'} type - 알림 타입
- * @property {string} message - 경고 메세지
- * @property {string} recommendation - AI 추천 조치사항
- * @property {boolean} isAcknowledged - 조치 완료 여부
+ * @property {string} id
+ * @property {string} occurredAt
+ * @property {AlertType} type
+ * @property {string} message
+ * @property {string} recommendation
+ * @property {boolean} isAcknowledged
  */
 
-// 반응형 상태 관리
-const alerts = ref([
+const TOAST_DURATION_MS = 7000;
+const ALERT_STREAM_DELAY_MS = 4000;
+
+/** @type {Alert[]} */
+const INITIAL_ALERTS = [
   {
     id: 'a-001',
     occurredAt: '2025-12-04 10:15:23',
     type: 'warning',
-    message: 'CPU 사용률이 80%를 초과했습니다. 비정상 프로세스 여부 확인 필요.',
-    recommendation: 'Top 3 프로세스 점검 후 불필요 프로세스 종료, 5분 후 재측정.',
+    message: 'CPU usage has stayed above 80% for the last 10 minutes.',
+    recommendation: 'Review the top CPU processes and scale the workload within 5 minutes.',
     isAcknowledged: false,
   },
   {
     id: 'a-002',
     occurredAt: '2025-12-04 09:58:41',
     type: 'alarm',
-    message: '웹 애플리케이션 응답 지연 감지. 평균 응답시간 4.5s.',
-    recommendation: '최근 배포 롤백 검토, APM 트레이스 확인 후 장애 전파 여부 판단.',
+    message: 'Application response latency breached the 4.5s threshold.',
+    recommendation: 'Check the most recent deployment and inspect critical APM traces.',
     isAcknowledged: false,
   },
   {
     id: 'a-003',
     occurredAt: '2025-12-04 09:12:05',
     type: 'warning',
-    message: '디스크 사용률 70% 도달. 로그 로테이션 필요.',
-    recommendation: '로그 로테이션 스케줄 확인, 불필요 로그 삭제 및 압축.',
+    message: 'Disk usage is at 70% and climbing steadily.',
+    recommendation: 'Rotate log files and evaluate short-term storage expansion.',
     isAcknowledged: false,
   },
-]);
+];
 
-// 모달 상태 관리
-const currentModalAlert = ref(null);
-const isModalOpen = ref(false);
-
-// 토스트 상태 관리
-const toastMessage = ref('');
-const isToastVisible = ref(false);
-let toastTimer = null;
-
-// 마지막 업데이트 시간
-const lastUpdated = ref('업데이트 대기 중...');
-
-/**
- * 정렬된 알림 목록 (발생일자 기준 내림차순)
- */
-const sortedAlerts = computed(() => {
-  return [...alerts.value].sort((a, b) => new Date(b.occurredAt) - new Date(a.occurredAt));
+const cloneAlert = (alert) => ({
+  ...alert,
+  isAcknowledged: Boolean(alert.isAcknowledged),
 });
 
-/**
- * 마지막 업데이트 시간 갱신
- */
-const updateLastUpdated = () => {
-  const now = new Date();
-  lastUpdated.value = `업데이트: ${now.toLocaleString('ko-KR')}`;
+const toLastUpdatedCopy = () => `Last updated: ${new Date().toLocaleString('ko-KR')}`;
+
+const useAlertDashboard = () => {
+  const alerts = ref(INITIAL_ALERTS.map(cloneAlert));
+  const lastUpdated = ref('Waiting for updates...');
+
+  const sortedAlerts = computed(() =>
+    [...alerts.value].sort(
+      (first, second) => new Date(second.occurredAt) - new Date(first.occurredAt),
+    ),
+  );
+
+  const touchLastUpdated = () => {
+    lastUpdated.value = toLastUpdatedCopy();
+  };
+
+  const addAlert = (incomingAlert) => {
+    if (alerts.value.some((alert) => alert.id === incomingAlert.id)) {
+      return null;
+    }
+
+    const nextAlert = cloneAlert({ ...incomingAlert, isAcknowledged: false });
+    alerts.value.unshift(nextAlert);
+    touchLastUpdated();
+    return nextAlert;
+  };
+
+  const acknowledgeAlert = (alertId) => {
+    const target = alerts.value.find((alert) => alert.id === alertId);
+    if (!target || target.isAcknowledged) {
+      return false;
+    }
+
+    target.isAcknowledged = true;
+    touchLastUpdated();
+    return true;
+  };
+
+  return {
+    alerts,
+    sortedAlerts,
+    lastUpdated,
+    addAlert,
+    acknowledgeAlert,
+    touchLastUpdated,
+  };
 };
 
-/**
- * 모달 열기
- * @param {Alert} alert
- */
-const openModal = (alert) => {
-  currentModalAlert.value = alert;
-  isModalOpen.value = true;
+const useModalController = () => {
+  const currentModalAlert = ref(null);
+  const isModalOpen = computed(() => Boolean(currentModalAlert.value));
+
+  const openModal = (alert) => {
+    currentModalAlert.value = alert;
+  };
+
+  const closeModal = () => {
+    currentModalAlert.value = null;
+  };
+
+  return { currentModalAlert, isModalOpen, openModal, closeModal };
 };
 
-/**
- * 모달 닫기
- */
-const closeModal = () => {
-  isModalOpen.value = false;
-  currentModalAlert.value = null;
+const useToast = () => {
+  const toastMessage = ref('');
+  const isToastVisible = ref(false);
+  let toastTimerId;
+
+  const stopTimer = () => {
+    if (toastTimerId) {
+      clearTimeout(toastTimerId);
+      toastTimerId = null;
+    }
+  };
+
+  const hideToast = () => {
+    isToastVisible.value = false;
+    stopTimer();
+  };
+
+  const showToast = (alert) => {
+    toastMessage.value = `${alert.occurredAt} · ${alert.message}`;
+    isToastVisible.value = true;
+
+    stopTimer();
+    toastTimerId = setTimeout(() => {
+      isToastVisible.value = false;
+      toastTimerId = null;
+    }, TOAST_DURATION_MS);
+  };
+
+  onUnmounted(stopTimer);
+
+  return { toastMessage, isToastVisible, showToast, hideToast };
 };
 
-/**
- * 조치 완료 처리
- */
-const handleAcknowledge = () => {
-  if (!currentModalAlert.value || currentModalAlert.value.isAcknowledged) return;
+const { sortedAlerts, lastUpdated, addAlert, acknowledgeAlert, touchLastUpdated } =
+  useAlertDashboard();
+const { currentModalAlert, isModalOpen, openModal, closeModal } = useModalController();
+const { toastMessage, isToastVisible, showToast, hideToast } = useToast();
+
+const acknowledgeCurrentAlert = () => {
+  if (!currentModalAlert.value) {
+    return;
+  }
+
+  const acknowledged = acknowledgeAlert(currentModalAlert.value.id);
+  if (!acknowledged) {
+    return;
+  }
 
   currentModalAlert.value.isAcknowledged = true;
-
-  const idx = alerts.value.findIndex((a) => a.id === currentModalAlert.value.id);
-  if (idx !== -1) alerts.value[idx].isAcknowledged = true;
-
-  updateLastUpdated();
-
-  // 실제 연동 시 API 호출
-  // await fetch(`/api/alerts/${currentModalAlert.value.id}/acknowledge`, { method: 'POST' });
 };
 
-/**
- * 신규 alarm 수신 처리
- * @param {Alert} newAlert
- */
-const handleIncomingAlarm = (newAlert) => {
-  const exists = alerts.value.some((a) => a.id === newAlert.id);
-  if (exists) return;
-
-  newAlert.isAcknowledged = false;
-  alerts.value.unshift(newAlert);
-
-  updateLastUpdated();
-
-  toastMessage.value = `${newAlert.occurredAt} · ${newAlert.message}`;
-  isToastVisible.value = true;
-
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    isToastVisible.value = false;
-  }, 7000);
+const handleIncomingAlert = (incomingAlert) => {
+  const alert = addAlert(incomingAlert);
+  if (alert) {
+    showToast(alert);
+  }
 };
 
-/**
- * 토스트에서 상세보기 열기
- */
 const openModalFromToast = () => {
-  const latestAlert = sortedAlerts.value.find((a) => !a.isAcknowledged);
+  const latestAlert = sortedAlerts.value.find((alert) => !alert.isAcknowledged);
   if (latestAlert) {
-    isToastVisible.value = false;
+    hideToast();
     openModal(latestAlert);
   }
 };
 
 onMounted(() => {
-  updateLastUpdated();
+  touchLastUpdated();
 
-  // 데모용: 4초 후 신규 alarm 도착 시나리오
   setTimeout(() => {
-    const incoming = {
+    handleIncomingAlert({
       id: 'a-004',
       occurredAt: new Date().toLocaleString('ko-KR'),
       type: 'alarm',
-      message: 'DB 연결 지연 및 재시도 발생. 연결 실패율 12% 감지.',
-      recommendation: 'DB 연결 풀 모니터링, 장애 조치 스위치 점검 후 read replica 전환 고려.',
-      isAcknowledged: false,
-    };
-    handleIncomingAlarm(incoming);
-  }, 4000);
-});
-
-onUnmounted(() => {
-  if (toastTimer) clearTimeout(toastTimer);
+      message: 'Database read latency exceeded 400ms on P99.',
+      recommendation: 'Scale read replicas and inspect slow queries immediately.',
+    });
+  }, ALERT_STREAM_DELAY_MS);
 });
 </script>
 
@@ -160,26 +198,26 @@ onUnmounted(() => {
     <header>
       <div>
         <div class="title">Alert Dashboard</div>
-        <div class="subtitle">초기 프로토타입 · UI 피드백용</div>
+        <div class="subtitle">Early prototype dashboard &amp; UI playground</div>
       </div>
-      <div class="pill">실시간 모니터링</div>
+      <div class="pill">Real-time Monitoring</div>
     </header>
 
     <main>
       <section class="card">
         <div class="card-header">
           <div>
-            <div style="font-weight:700;">최근 발생 알림</div>
-            <div class="subtitle">행을 클릭하면 상세를 볼 수 있어요.</div>
+            <div class="section-heading">Latest Alerts</div>
+            <div class="subtitle">Click any row to inspect the full context</div>
           </div>
           <div class="subtitle">{{ lastUpdated }}</div>
         </div>
         <table id="alert-table">
           <thead>
             <tr>
-              <th>발생일자</th>
+              <th>Occurred At</th>
               <th>Alert Type</th>
-              <th>조치 완료 여부</th>
+              <th>Resolution</th>
             </tr>
           </thead>
           <tbody>
@@ -199,7 +237,7 @@ onUnmounted(() => {
               <td>
                 <span :class="['badge', alert.isAcknowledged ? 'completed' : 'pending']">
                   <span class="status-dot"></span>
-                  {{ alert.isAcknowledged ? '완료' : '대기' }}
+                  {{ alert.isAcknowledged ? 'Completed' : 'Pending' }}
                 </span>
               </td>
             </tr>
@@ -208,64 +246,56 @@ onUnmounted(() => {
       </section>
     </main>
 
-    <!-- 상세보기 모달 -->
     <div v-if="isModalOpen" class="modal-backdrop" @click.self="closeModal">
       <div class="modal" role="dialog" aria-modal="true">
         <div class="modal-header">
-          <div style="display:flex; gap:10px; align-items:center;">
+          <div class="modal-heading">
             <div v-if="currentModalAlert" :class="['badge', currentModalAlert.type]">
               {{ currentModalAlert.type.toUpperCase() }}
             </div>
-            <div style="font-weight:700;">
-              Alert 상세
+            <div class="modal-title">
+              Alert Details
               <span v-if="currentModalAlert"> · {{ currentModalAlert.id }}</span>
             </div>
           </div>
-          <button class="secondary" @click="closeModal">닫기</button>
+          <button class="secondary" type="button" @click="closeModal">Close</button>
         </div>
-        <div class="modal-body" v-if="currentModalAlert">
+        <div v-if="currentModalAlert" class="modal-body">
           <div class="meta">
             <span>{{ currentModalAlert.occurredAt }}</span>
-            <span style="color:rgba(255,255,255,0.15);">•</span>
+            <span class="meta-divider">·</span>
             <span>{{ currentModalAlert.type.toUpperCase() }}</span>
           </div>
           <div class="section">
-            <div class="section-title">경고 메세지</div>
+            <div class="section-title">Message</div>
             <div class="section-content">{{ currentModalAlert.message }}</div>
           </div>
           <div class="section">
-            <div class="section-title">AI 추천 조치사항</div>
+            <div class="section-title">AI Recommendation</div>
             <div class="section-content">{{ currentModalAlert.recommendation }}</div>
           </div>
         </div>
         <div class="modal-footer">
-          <button class="secondary" @click="closeModal">확인</button>
+          <button class="secondary" type="button" @click="closeModal">Cancel</button>
           <button
+            type="button"
             :disabled="currentModalAlert?.isAcknowledged"
-            :style="{
-              background: currentModalAlert?.isAcknowledged
-                ? 'rgba(34,197,94,0.2)'
-                : '#60a5fa',
-              color: currentModalAlert?.isAcknowledged
-                ? '#22c55e'
-                : '#0b1220'
-            }"
-            @click="handleAcknowledge"
+            class="primary"
+            :class="{ completed: currentModalAlert?.isAcknowledged }"
+            @click="acknowledgeCurrentAlert"
           >
-            {{ currentModalAlert?.isAcknowledged ? '조치 완료됨' : '조치 완료' }}
+            {{ currentModalAlert?.isAcknowledged ? 'Acknowledged' : 'Acknowledge Alert' }}
           </button>
         </div>
       </div>
     </div>
 
-    <!-- 신규 alarm 알림 토스트 -->
-    <div v-if="isToastVisible" class="toast" style="display: block;">
-      <div style="flex:1;">
-        <div class="toast-title">새로운 Alarm 도착</div>
+    <div v-if="isToastVisible" class="toast">
+      <div class="toast-content">
+        <div class="toast-title">New Alert Received</div>
         <div class="subtitle">{{ toastMessage }}</div>
-        <button @click="openModalFromToast">상세 바로 보기</button>
+        <button type="button" @click="openModalFromToast">Open the alert</button>
       </div>
     </div>
   </div>
 </template>
-

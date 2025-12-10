@@ -5,11 +5,12 @@
 # =========================
 
 import os
-from pathlib import Path
 import time
 import threading
 import json
 from collections import deque
+from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import pandas as pd
@@ -20,6 +21,9 @@ import pickle
 
 BASE_DIR = Path(__file__).resolve().parent
 DASHBOARD_EVENTS_URL = "http://127.0.0.1:8000/dashboard/events"
+MCP_ENQUEUE_URL = "http://127.0.0.1:8000/mcp/enqueue"
+MANUAL_PATH = str((BASE_DIR.parents[0] / "docs/manuals/manual.txt").resolve())
+MANUAL_DIR = str((BASE_DIR.parents[0] / "docs/manuals").resolve())
 
 
 def send_event_to_dashboard(event: dict):
@@ -32,10 +36,12 @@ def send_event_to_dashboard(event: dict):
         resp = requests.post(DASHBOARD_EVENTS_URL, json=payload, timeout=5)
         if resp.status_code >= 400:
             print(f"[Dashboard] Failed to send event ({resp.status_code}): {resp.text}")
-        else:
-            print(f"[Dashboard] Event sent ({resp.status_code})")
+            return None
+        print(f"[Dashboard] Event sent ({resp.status_code})")
+        return resp.json()
     except requests.RequestException as exc:
         print(f"[Dashboard] Error sending event: {exc}")
+        return None
 
 
 def compute_spe(pca, scaled_x):
@@ -199,7 +205,11 @@ def warn_loop(get_snapshot, history_buffer, scaler, pca, log, threshold_t2, thre
             }
             event = json.loads(json.dumps(event, default=float))
             log.add(event)
-            send_event_to_dashboard(event)
+            response = send_event_to_dashboard(event)
+            if response and isinstance(response, dict):
+                alert_id = response.get("id")
+                if alert_id:
+                    send_event_to_mcp(alert_id, event)
 
         time.sleep(3)
 
@@ -233,7 +243,11 @@ def trigger_alarm(code, log: EventLog, history_buffer, scaler, pca):
     }
     event = json.loads(json.dumps(event, default=float))
     log.add(event)
-    send_event_to_dashboard(event)
+    response = send_event_to_dashboard(event)
+    if response and isinstance(response, dict):
+        alert_id = response.get("id")
+        if alert_id:
+            send_event_to_mcp(alert_id, event)
     return event
 
 
@@ -250,14 +264,48 @@ def run_pipeline(normal_csv: str = "normal.csv", test_csv: str = "test2.csv"):
         args=(get_snapshot, history_buffer, scaler, pca, log, threshold_t2, threshold_spe),
     )
     warn_thread.daemon = True
+    print(">>> ALARM TEST RUN")
+    trigger_alarm(code=101, log=log, history_buffer=history_buffer, scaler=scaler, pca=pca)
+
+    print(">>> LAST LOG")
+    print(log.logs[-1])
+
     warn_thread.start()
+    time.sleep(15)  # warn_loop 조금 돌리고
+
+
 
     try:
         warn_thread.join()
+
     except KeyboardInterrupt:
         print("Stopping warn loop...")
 
     return log, history_buffer, scaler, pca
+
+def send_event_to_mcp(alert_id: int, event: dict):
+    manual_path = MANUAL_PATH or str(Path(MANUAL_DIR) / "manual.txt")
+    payload = {
+        "trace_id": f"ai-event-{alert_id}-{uuid4().hex}",
+        "message": str(event.get("alarm_code", "")),
+        "anomaly": {
+            "sensor_id": event.get("sensor_id", 0),
+            "type": event.get("event_type", "warning"),
+        },
+        "manual_reference": {"path": manual_path},
+        "metadata": {
+            "dashboard_id": alert_id,
+            "event_type": (event.get("event_type") or "warning").upper(),
+        },
+    }
+    try:
+        resp = requests.post(MCP_ENQUEUE_URL, json=payload, timeout=5)
+        if resp.status_code >= 400:
+            print(f"[MCP] Failed to enqueue job ({resp.status_code}): {resp.text}")
+        else:
+            print(f"[MCP] Job enqueued ({resp.status_code})")
+    except requests.RequestException as exc:
+        print(f"[MCP] Error enqueueing job: {exc}")
 
 
 def main():

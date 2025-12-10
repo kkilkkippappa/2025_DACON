@@ -64,5 +64,5 @@ def test_ai_event_route_inserts_dashboard_row(dashboard_client):
     with TestingSession() as session:
         alerts = session.query(DashboardAlert).all()
         assert len(alerts) == 1
-        assert alerts[0].sensor_id == 0
+        assert alerts[0].sensor_id == 1
         assert alerts[0].message == "101"

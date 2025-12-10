@@ -250,6 +250,7 @@ class OpenAIMCPClient:
             "위 자료만 사용하여 지정된 WARNING/ALARM 템플릿을 정확히 채워라.\n"
             "어떠한 추가 추론이나 자료 생성도 금지된다.\n"
         )
+
         return prompt
 
     def _parse_response(self, response: Any) -> Dict[str, Any]:

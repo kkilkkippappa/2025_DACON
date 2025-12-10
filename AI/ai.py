@@ -19,7 +19,7 @@ from sklearn.preprocessing import StandardScaler
 import pickle
 
 BASE_DIR = Path(__file__).resolve().parent
-DASHBOARD_EVENTS_URL = os.getenv("DASHBOARD_EVENTS_URL", "http://127.0.0.1:8000/dashboard/events")
+DASHBOARD_EVENTS_URL = "http://127.0.0.1:8000/dashboard/events"
 
 
 def send_event_to_dashboard(event: dict):
@@ -161,6 +161,10 @@ def make_snapshot_reader(sensor_cols):
 
     def _reader():
         nonlocal cursor
+        if len(sensor_cols) == 0:
+            raise RuntimeError("Sensor dataset is empty.")
+        if cursor >= len(sensor_cols):
+            cursor = 0
         snap = sensor_cols[cursor]
         cursor += 1
         return snap
@@ -189,7 +193,7 @@ def warn_loop(get_snapshot, history_buffer, scaler, pca, log, threshold_t2, thre
                 "top3_t2": top3_t2,
                 "top3_spe": top3_spe,
                 "history": list(history_buffer),
-                "alarm_code": None,
+                "alarm_code": "Warning",
                 "raw_data": snap.tolist(),
                 "source": "sensor",
             }

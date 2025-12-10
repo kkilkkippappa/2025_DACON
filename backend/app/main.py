@@ -12,6 +12,9 @@ if str(BACKEND_DIR) not in sys.path:
 
 from router import dashboard_router as dashboard, sensor_router as sensor, mcp_router as mcp
 from app.services.mcp_service import MCPService, get_mcp_service
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 class ManualRequest(BaseModel):
     prompt: str
@@ -41,6 +44,7 @@ def create_app() -> FastAPI:
     async def root():
         return {"message": "Welcome to 2025 Hackathon API"}
 
+    logger.info("FastAPI application created with routers: dashboard, sensor, mcp")
     return application
 
 

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 
 import { buildApiBase, buildEndpoint, sanitizeAlert } from './utils/dashboard';
+import { logger } from './utils/logger';
 
 const FASTAPI_HOST = import.meta.env.FASTAPI_LOCAL_URL ?? 'http://localhost';
 const FASTAPI_PORT = import.meta.env.FASTAPI_DEV_SERVER_PORT ?? '8000';
@@ -124,7 +125,7 @@ const fetchDashboardAlerts = async () => {
   loadError.value = '';
 
   try {
-    const response = await fetch(mapEndpoint('/alerts'));
+    const response = await fetch(mapEndpoint('/send'));
     if (!response.ok) {
       throw new Error(`Failed to load alerts (${response.status})`);
     }
@@ -133,7 +134,7 @@ const fetchDashboardAlerts = async () => {
     const normalized = Array.isArray(payload) ? payload : [];
     setAlerts(normalized);
   } catch (error) {
-    console.error('Failed to load dashboard alerts', error);
+    logger.exception('Failed to load dashboard alerts', error);
     loadError.value = '알림 데이터를 불러오지 못했습니다. 잠시 후 다시 시도하세요.';
   } finally {
     isLoadingAlerts.value = false;
@@ -147,7 +148,7 @@ const acknowledgeCurrentAlert = async () => {
 
   try {
     const response = await fetch(
-      mapEndpoint(`/alerts/${currentModalAlert.value.id}/handled`),
+      mapEndpoint(`/send/${currentModalAlert.value.id}/handled`),
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -165,7 +166,7 @@ const acknowledgeCurrentAlert = async () => {
       currentModalAlert.value = synced;
     }
   } catch (error) {
-    console.error('Failed to acknowledge alert', error);
+    logger.exception('Failed to acknowledge alert', error);
   }
 };
 

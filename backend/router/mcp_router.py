@@ -3,9 +3,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from app.logging_config import get_logger
 from app.services.mcp_service import MCPQueueError, MCPService, get_mcp_service
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
+logger = get_logger(__name__)
 
 
 class ManualReference(BaseModel):
@@ -43,6 +45,7 @@ async def enqueue_job(
     try:
         entry = await mcp_service.enqueue(payload.model_dump())
     except MCPQueueError as exc:
+        logger.exception("Failed to enqueue MCP job")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     return QueueResponse(queue_id=entry.id or 0, trace_id=entry.trace_id, status=entry.status)

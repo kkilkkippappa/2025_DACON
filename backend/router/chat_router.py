@@ -1,6 +1,9 @@
 from fastapi import APIRouter
 
+from app.logging_config import get_logger
+
 router = APIRouter(prefix='/chat', tags=['chat'])
+logger = get_logger(__name__)
 
 @router.get("/")
 def home():
@@ -13,5 +16,6 @@ async def LLM_call():
         #OpenAI 호출
         pass
 
-    except Exception as e:
-        return {"status" : "error", "error message" : {e.msg}}
+    except Exception as exc:  # pragma: no cover - placeholder logic
+        logger.exception("Chat LLM call failed")
+        return {"status": "error", "error_message": str(exc)}

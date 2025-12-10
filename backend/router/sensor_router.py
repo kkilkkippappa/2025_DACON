@@ -5,10 +5,13 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.DB.db_config import get_db
+from app.DB.db_config import get_db_for_table
 from app.DB.table_sensor import SensorTable, SensorDTO
+from app.logging_config import get_logger
 
 router = APIRouter(prefix="/sensor", tags=["sensor"])
+logger = get_logger(__name__)
+sensor_db = get_db_for_table("sensor", schema_name="sensor_data")
 
 
 @router.get("/")
@@ -21,7 +24,7 @@ def read_root():
 def list_sensors(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    db: Session = Depends(sensor_db),
 ):
     """Fetch sensor rows ordered by timestamp with pagination."""
     try:
@@ -30,6 +33,7 @@ def list_sensors(
         )
         return jsonable_encoder([SensorDTO.model_validate(s) for s in sensors])
     except SQLAlchemyError as exc:
+        logger.exception("Database error while listing sensors")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database error while listing sensors: {exc.__class__.__name__}",
@@ -37,7 +41,7 @@ def list_sensors(
 
 
 @router.get("/sensors/{sensor_id}")
-def get_sensor(sensor_id: int, db: Session = Depends(get_db)):
+def get_sensor(sensor_id: int, db: Session = Depends(sensor_db)):
     """Retrieve a single sensor record by primary key."""
     sensor = db.query(SensorTable).filter(SensorTable.id == sensor_id).first()
     if not sensor:
@@ -46,7 +50,7 @@ def get_sensor(sensor_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/sensors", status_code=status.HTTP_201_CREATED)
-def create_sensor(payload: SensorDTO, db: Session = Depends(get_db)):
+def create_sensor(payload: SensorDTO, db: Session = Depends(sensor_db)):
     """Insert a new sensor record with validation and error handling."""
     sensor_data = payload.model_dump(exclude_unset=True, exclude={"id"})
     if "date_time" not in sensor_data:
@@ -59,12 +63,14 @@ def create_sensor(payload: SensorDTO, db: Session = Depends(get_db)):
         db.refresh(sensor)
     except IntegrityError as exc:
         db.rollback()
+        logger.exception("Constraint violation while inserting sensor")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Failed to insert sensor due to constraint violation",
         ) from exc
     except SQLAlchemyError as exc:
         db.rollback()
+        logger.exception("Database error while inserting sensor")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database error while inserting sensor: {exc.__class__.__name__}",
@@ -74,7 +80,7 @@ def create_sensor(payload: SensorDTO, db: Session = Depends(get_db)):
 
 #db - fastAPI 간 DB 데이터 show 테스트.
 @router.get('/test')
-def get_tese_data(db: Session = Depends(get_db)):
+def get_tese_data(db: Session = Depends(sensor_db)):
     res = db.query(SensorTable).first()
     if not res :
         raise HTTPException(status_code=404, detail="No sensor data for testing here")

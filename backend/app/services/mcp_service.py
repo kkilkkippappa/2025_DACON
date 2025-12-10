@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -18,8 +17,9 @@ from app.DB.mcp_tables import (
 )
 from app.mcp.mcp_client_openai import MCPClientError, OpenAIMCPClient
 from app.mcp.mcp_manual import ManualRepository, get_manual_repository
+from app.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MCPQueueError(Exception):

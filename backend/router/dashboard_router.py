@@ -10,7 +10,9 @@ from app.DB.use_dashboard import (
     fetch_dashboard_alerts,
     update_dashboard_alert_handled,
 )
+from app.logging_config import get_logger
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
@@ -20,29 +22,34 @@ def dashboard_health():
     return {"message": "dashboard routes ready"}
 
 
-@router.get("/alerts")
-def list_dashboard_alerts(db: Session = Depends(get_db_for_table("dashboard"))):
+dashboard_db = get_db_for_table("dashboard", schema_name="sensor_data")
+
+
+@router.get("/send")
+def list_dashboard_alerts(db: Session = Depends(dashboard_db)):
     """Return dashboard entries without exposing sensor_id."""
     try:
         return fetch_dashboard_alerts(db)
     except SQLAlchemyError as exc:
+        logger.exception("Failed to fetch dashboard entries")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch dashboard entries: {exc.__class__.__name__}",
+            detail=f"Failed to fetch dashboard entries: {exc.__class__.__name__} -> {exc}",
         ) from exc
 
 
-@router.patch("/alerts/{alert_id}/handled")
+@router.patch("/send/{alert_id}/handled")
 def toggle_alert_handled(
     alert_id: int,
     payload: DashboardHandledUpdateDTO,
-    db: Session = Depends(get_db_for_table("dashboard")),
+    db: Session = Depends(dashboard_db),
 ):
     """Set the handled flag (True/False) for a specific dashboard row."""
     try:
         updated = update_dashboard_alert_handled(db, alert_id, payload.isAcknowledged)
     except SQLAlchemyError as exc:
         db.rollback()
+        logger.exception("Failed to update dashboard row %s", alert_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update dashboard row: {exc.__class__.__name__}",

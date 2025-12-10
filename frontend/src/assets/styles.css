@@ -132,6 +132,19 @@ tr.acknowledged {
   background: currentColor;
 }
 
+.table-message {
+  text-align: center;
+  padding: 24px 18px;
+  color: var(--muted);
+  font-style: italic;
+  letter-spacing: 0.01em;
+}
+
+.table-message.error {
+  color: #f87171;
+  font-style: normal;
+}
+
 /* Modal */
 .modal-backdrop {
   position: fixed; inset: 0;

@@ -1,98 +1,65 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 
-/** @typedef {'warning' | 'alarm'} AlertType */
+import { buildApiBase, buildEndpoint, sanitizeAlert } from './utils/dashboard';
 
-/**
- * @typedef {Object} Alert
- * @property {string} id
- * @property {string} occurredAt
- * @property {AlertType} type
- * @property {string} message
- * @property {string} recommendation
- * @property {boolean} isAcknowledged
- */
+const FASTAPI_HOST = import.meta.env.FASTAPI_LOCAL_URL ?? 'http://localhost';
+const FASTAPI_PORT = import.meta.env.FASTAPI_DEV_SERVER_PORT ?? '8000';
+const DASHBOARD_API_BASE_PATH = import.meta.env.VUE_API_BASE_PATH ?? '/dashboard';
 
+const DASHBOARD_API_BASE = buildApiBase(FASTAPI_HOST, FASTAPI_PORT, DASHBOARD_API_BASE_PATH);
+
+const mapEndpoint = (suffix = '') => buildEndpoint(DASHBOARD_API_BASE, suffix);
 const TOAST_DURATION_MS = 7000;
-const ALERT_STREAM_DELAY_MS = 4000;
-
-/** @type {Alert[]} */
-const INITIAL_ALERTS = [
-  {
-    id: 'a-001',
-    occurredAt: '2025-12-04 10:15:23',
-    type: 'warning',
-    message: 'CPU usage has stayed above 80% for the last 10 minutes.',
-    recommendation: 'Review the top CPU processes and scale the workload within 5 minutes.',
-    isAcknowledged: false,
-  },
-  {
-    id: 'a-002',
-    occurredAt: '2025-12-04 09:58:41',
-    type: 'alarm',
-    message: 'Application response latency breached the 4.5s threshold.',
-    recommendation: 'Check the most recent deployment and inspect critical APM traces.',
-    isAcknowledged: false,
-  },
-  {
-    id: 'a-003',
-    occurredAt: '2025-12-04 09:12:05',
-    type: 'warning',
-    message: 'Disk usage is at 70% and climbing steadily.',
-    recommendation: 'Rotate log files and evaluate short-term storage expansion.',
-    isAcknowledged: false,
-  },
-];
-
-const cloneAlert = (alert) => ({
-  ...alert,
-  isAcknowledged: Boolean(alert.isAcknowledged),
-});
-
-const toLastUpdatedCopy = () => `Last updated: ${new Date().toLocaleString('ko-KR')}`;
 
 const useAlertDashboard = () => {
-  const alerts = ref(INITIAL_ALERTS.map(cloneAlert));
-  const lastUpdated = ref('Waiting for updates...');
+  const alerts = ref([]);
+  const lastUpdated = ref('데이터 동기화 대기 중...');
+
+  const toEpoch = (value) => {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  };
 
   const sortedAlerts = computed(() =>
     [...alerts.value].sort(
-      (first, second) => new Date(second.occurredAt) - new Date(first.occurredAt),
+      (first, second) => toEpoch(second.occurredAt) - toEpoch(first.occurredAt),
     ),
   );
 
   const touchLastUpdated = () => {
-    lastUpdated.value = toLastUpdatedCopy();
+    lastUpdated.value = `마지막 동기화: ${new Date().toLocaleString('ko-KR')}`;
   };
 
-  const addAlert = (incomingAlert) => {
-    if (alerts.value.some((alert) => alert.id === incomingAlert.id)) {
+  const setAlerts = (nextAlerts) => {
+    alerts.value = nextAlerts.map(sanitizeAlert);
+    touchLastUpdated();
+  };
+
+  const syncAlert = (nextAlert) => {
+    if (!nextAlert) {
       return null;
     }
 
-    const nextAlert = cloneAlert({ ...incomingAlert, isAcknowledged: false });
-    alerts.value.unshift(nextAlert);
-    touchLastUpdated();
-    return nextAlert;
-  };
+    const normalized = sanitizeAlert(nextAlert);
+    const existingIdx = alerts.value.findIndex((alert) => alert.id === normalized.id);
 
-  const acknowledgeAlert = (alertId) => {
-    const target = alerts.value.find((alert) => alert.id === alertId);
-    if (!target || target.isAcknowledged) {
-      return false;
+    if (existingIdx === -1) {
+      alerts.value.unshift(normalized);
+      touchLastUpdated();
+      return alerts.value[0];
     }
 
-    target.isAcknowledged = true;
+    alerts.value[existingIdx] = { ...alerts.value[existingIdx], ...normalized };
     touchLastUpdated();
-    return true;
+    return alerts.value[existingIdx];
   };
 
   return {
-    alerts,
     sortedAlerts,
     lastUpdated,
-    addAlert,
-    acknowledgeAlert,
+    setAlerts,
+    syncAlert,
     touchLastUpdated,
   };
 };
@@ -129,8 +96,8 @@ const useToast = () => {
     stopTimer();
   };
 
-  const showToast = (alert) => {
-    toastMessage.value = `${alert.occurredAt} · ${alert.message}`;
+  const showToast = (message) => {
+    toastMessage.value = message;
     isToastVisible.value = true;
 
     stopTimer();
@@ -145,28 +112,60 @@ const useToast = () => {
   return { toastMessage, isToastVisible, showToast, hideToast };
 };
 
-const { sortedAlerts, lastUpdated, addAlert, acknowledgeAlert, touchLastUpdated } =
-  useAlertDashboard();
+const { sortedAlerts, lastUpdated, setAlerts, syncAlert } = useAlertDashboard();
 const { currentModalAlert, isModalOpen, openModal, closeModal } = useModalController();
-const { toastMessage, isToastVisible, showToast, hideToast } = useToast();
+const { toastMessage, isToastVisible, hideToast } = useToast();
 
-const acknowledgeCurrentAlert = () => {
-  if (!currentModalAlert.value) {
-    return;
+const isLoadingAlerts = ref(false);
+const loadError = ref('');
+
+const fetchDashboardAlerts = async () => {
+  isLoadingAlerts.value = true;
+  loadError.value = '';
+
+  try {
+    const response = await fetch(mapEndpoint('/alerts'));
+    if (!response.ok) {
+      throw new Error(`Failed to load alerts (${response.status})`);
+    }
+
+    const payload = await response.json();
+    const normalized = Array.isArray(payload) ? payload : [];
+    setAlerts(normalized);
+  } catch (error) {
+    console.error('Failed to load dashboard alerts', error);
+    loadError.value = '알림 데이터를 불러오지 못했습니다. 잠시 후 다시 시도하세요.';
+  } finally {
+    isLoadingAlerts.value = false;
   }
-
-  const acknowledged = acknowledgeAlert(currentModalAlert.value.id);
-  if (!acknowledged) {
-    return;
-  }
-
-  currentModalAlert.value.isAcknowledged = true;
 };
 
-const handleIncomingAlert = (incomingAlert) => {
-  const alert = addAlert(incomingAlert);
-  if (alert) {
-    showToast(alert);
+const acknowledgeCurrentAlert = async () => {
+  if (!currentModalAlert.value || currentModalAlert.value.isAcknowledged) {
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      mapEndpoint(`/alerts/${currentModalAlert.value.id}/handled`),
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isAcknowledged: true }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error(`Failed to acknowledge alert (${response.status})`);
+    }
+
+    const payload = await response.json();
+    const synced = syncAlert(payload);
+    if (synced) {
+      currentModalAlert.value = synced;
+    }
+  } catch (error) {
+    console.error('Failed to acknowledge alert', error);
   }
 };
 
@@ -179,17 +178,7 @@ const openModalFromToast = () => {
 };
 
 onMounted(() => {
-  touchLastUpdated();
-
-  setTimeout(() => {
-    handleIncomingAlert({
-      id: 'a-004',
-      occurredAt: new Date().toLocaleString('ko-KR'),
-      type: 'alarm',
-      message: 'Database read latency exceeded 400ms on P99.',
-      recommendation: 'Scale read replicas and inspect slow queries immediately.',
-    });
-  }, ALERT_STREAM_DELAY_MS);
+  fetchDashboardAlerts();
 });
 </script>
 
@@ -221,26 +210,37 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr
-              v-for="alert in sortedAlerts"
-              :key="alert.id"
-              :class="{ acknowledged: alert.isAcknowledged }"
-              @click="openModal(alert)"
-            >
-              <td>{{ alert.occurredAt }}</td>
-              <td>
-                <span :class="['badge', alert.type]">
-                  <span class="status-dot"></span>
-                  {{ alert.type }}
-                </span>
-              </td>
-              <td>
-                <span :class="['badge', alert.isAcknowledged ? 'completed' : 'pending']">
-                  <span class="status-dot"></span>
-                  {{ alert.isAcknowledged ? 'Completed' : 'Pending' }}
-                </span>
-              </td>
+            <tr v-if="isLoadingAlerts">
+              <td colspan="3" class="table-message">데이터를 불러오는 중입니다...</td>
             </tr>
+            <tr v-else-if="loadError">
+              <td colspan="3" class="table-message error">{{ loadError }}</td>
+            </tr>
+            <tr v-else-if="!sortedAlerts.length">
+              <td colspan="3" class="table-message">표시할 알림이 없습니다.</td>
+            </tr>
+            <template v-else>
+              <tr
+                v-for="alert in sortedAlerts"
+                :key="alert.id"
+                :class="{ acknowledged: alert.isAcknowledged }"
+                @click="openModal(alert)"
+              >
+                <td>{{ alert.occurredAt }}</td>
+                <td>
+                  <span :class="['badge', alert.type]">
+                    <span class="status-dot"></span>
+                    {{ alert.type }}
+                  </span>
+                </td>
+                <td>
+                  <span :class="['badge', alert.isAcknowledged ? 'completed' : 'pending']">
+                    <span class="status-dot"></span>
+                    {{ alert.isAcknowledged ? '조치 완료' : '대기 중' }}
+                  </span>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </section>
@@ -284,7 +284,7 @@ onMounted(() => {
             :class="{ completed: currentModalAlert?.isAcknowledged }"
             @click="acknowledgeCurrentAlert"
           >
-            {{ currentModalAlert?.isAcknowledged ? 'Acknowledged' : 'Acknowledge Alert' }}
+            {{ currentModalAlert?.isAcknowledged ? '조치 완료됨' : '조치 완료' }}
           </button>
         </div>
       </div>

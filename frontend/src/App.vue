@@ -205,7 +205,8 @@ onMounted(() => {
         <table id="alert-table">
           <thead>
             <tr>
-              <th>Occurred At</th>
+              <th>Alert ID</th>
+              <th>Timestamp</th>
               <th>Alert Type</th>
               <th>Resolution</th>
             </tr>
@@ -227,11 +228,12 @@ onMounted(() => {
                 :class="{ acknowledged: alert.isAcknowledged }"
                 @click="openModal(alert)"
               >
-                <td>{{ alert.occurredAt }}</td>
+                <td class="mono">{{ alert.id }}</td>
+                <td>{{ alert.timestamp || alert.occurredAt }}</td>
                 <td>
                   <span :class="['badge', alert.type]">
                     <span class="status-dot"></span>
-                    {{ alert.type }}
+                    {{ alert.typeLabel }}
                   </span>
                 </td>
                 <td>
@@ -252,7 +254,7 @@ onMounted(() => {
         <div class="modal-header">
           <div class="modal-heading">
             <div v-if="currentModalAlert" :class="['badge', currentModalAlert.type]">
-              {{ currentModalAlert.type.toUpperCase() }}
+              {{ currentModalAlert.typeLabel }}
             </div>
             <div class="modal-title">
               Alert Details
@@ -263,9 +265,11 @@ onMounted(() => {
         </div>
         <div v-if="currentModalAlert" class="modal-body">
           <div class="meta">
-            <span>{{ currentModalAlert.occurredAt }}</span>
+            <span>ID: {{ currentModalAlert.id }}</span>
             <span class="meta-divider">·</span>
-            <span>{{ currentModalAlert.type.toUpperCase() }}</span>
+            <span>{{ currentModalAlert.timestamp || currentModalAlert.occurredAt }}</span>
+            <span class="meta-divider">·</span>
+            <span>{{ currentModalAlert.typeLabel }}</span>
           </div>
           <div class="section">
             <div class="section-title">Message</div>

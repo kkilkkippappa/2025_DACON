@@ -13,10 +13,18 @@ describe('TOD Frontend Smoke Tests', () => {
     expect(buildEndpoint(`${base}/`, '/health')).toBe('http://localhost:8000/dashboard/health')
   })
 
-  it('sanitizeAlert fills defaults and normalizes flags', () => {
-    const alert = sanitizeAlert({ id: 10, type: 'alarm', message: 'hi', ishandled: 1 })
+  it('sanitizeAlert fills defaults and normalizes flags/type/timestamp', () => {
+    const alert = sanitizeAlert({
+      id: 10,
+      type: 'ALARM',
+      message: 'hi',
+      ishandled: 1,
+      timestamp: '2025-12-10 12:00:00'
+    })
     expect(alert.id).toBe('10')
     expect(alert.type).toBe('alarm')
+    expect(alert.typeLabel).toBe('ALARM')
+    expect(alert.timestamp).toBe('2025-12-10 12:00:00')
     expect(alert.isAcknowledged).toBe(true)
     expect(alert.message).toBe('hi')
     expect(alert.recommendation).toBe('')

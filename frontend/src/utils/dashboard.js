@@ -33,14 +33,33 @@ export const sanitizeAlert = (rawAlert = {}) => {
     typeof globalThis.crypto?.randomUUID === 'function'
       ? globalThis.crypto.randomUUID()
       : `alert-${Date.now()}`;
+  const resolvedTimestamp =
+    rawAlert.timestamp ??
+    rawAlert.occurredAt ??
+    rawAlert.occurred_at ??
+    new Date().toLocaleString('ko-KR');
+
+  const normalizeType = () => {
+    const value = String(rawAlert.type || '').toUpperCase();
+    if (value === 'ALARM') {
+      return { typeClass: 'alarm', typeLabel: 'ALARM' };
+    }
+    if (value === 'WARN') {
+      return { typeClass: 'warning', typeLabel: 'WARN' };
+    }
+    if (value === 'WARNING') {
+      return { typeClass: 'warning', typeLabel: 'WARN' };
+    }
+    return { typeClass: 'warning', typeLabel: value || 'WARN' };
+  };
+  const { typeClass, typeLabel } = normalizeType();
 
   return {
     id: String(rawAlert.id ?? fallbackId),
-    occurredAt:
-      rawAlert.occurredAt ??
-      rawAlert.occurred_at ??
-      new Date().toLocaleString('ko-KR'),
-    type: rawAlert.type ?? 'warning',
+    occurredAt: resolvedTimestamp,
+    timestamp: resolvedTimestamp,
+    type: typeClass,
+    typeLabel,
     message: rawAlert.message ?? '',
     recommendation: rawAlert.recommendation ?? rawAlert.mannual ?? '',
     isAcknowledged: Boolean(

@@ -19,6 +19,16 @@ class DashboardHandledUpdateDTO(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class DashboardEventCreateDTO(BaseModel):
+    """Payload coming from AI events to insert into dashboard."""
+
+    event_type: str
+    alarm_code: str
+    sensor_id: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
 class DashboardAlertResponse(BaseModel):
     """View model tailored for the frontend dashboard."""
 
@@ -60,6 +70,22 @@ def update_dashboard_alert_handled(
         return None
 
     alert.ishandled = acknowledged
+    db.commit()
+    db.refresh(alert)
+    return DashboardAlertResponse.from_dashboard(alert)
+
+
+def create_dashboard_alert(
+    db: Session,
+    payload: DashboardEventCreateDTO,
+) -> DashboardAlertResponse:
+    """Insert a new dashboard alert row from an AI event."""
+    alert = DashboardAlert(
+        sensor_id=payload.sensor_id,
+        type=payload.event_type,
+        message=payload.alarm_code,
+    )
+    db.add(alert)
     db.commit()
     db.refresh(alert)
     return DashboardAlertResponse.from_dashboard(alert)

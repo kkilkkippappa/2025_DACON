@@ -14,17 +14,16 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.main import create_app
+from app.mcp.queue_models import ProcessingQueueDTO
 from app.services.mcp_service import (
     MCPQueueError,
     MCPService,
-    ProcessingQueueDTO,
     RemediationResult,
     get_mcp_service,
 )
 from app.mcp.mcp_client_openai import MCPClientError, OpenAIMCPClient
 import app.DB.db_config as db_config
 from app.DB.db_config import session_scope
-from app.DB.mcp_tables import ProcessingQueueTable
 from app.DB.table_dashboard import DashboardAlert
 
 

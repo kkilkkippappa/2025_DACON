@@ -1,21 +1,18 @@
 from __future__ import annotations
 
 import json
+import asyncio
+from collections import deque
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Deque, Dict, Optional
 from uuid import uuid4
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict
 
 from app.DB.db_config import session_scope
-from app.DB.mcp_tables import (
-    DeadLetterQueueTable,
-    ProcessingQueueDTO,
-    ProcessingQueueTable,
-)
 from app.DB.table_dashboard import DashboardAlert
+from app.mcp.queue_models import DeadLetterEntry, ProcessingQueueDTO, QueueEntry
 from app.mcp.mcp_client_openai import MCPClientError, OpenAIMCPClient
 from app.mcp.mcp_manual import ManualRepository, get_manual_repository
 from app.logging_config import get_logger
@@ -51,9 +48,13 @@ class MCPService:
         self.manual_repo = manual_repo or get_manual_repository()
         self.llm_client = llm_client or OpenAIMCPClient()
         self.max_attempts = max_attempts
+        self._queue: asyncio.Queue[int] = asyncio.Queue()
+        self._entries: Dict[int, QueueEntry] = {}
+        self._dead_letters: Deque[DeadLetterEntry] = deque(maxlen=200)
+        self._worker_task: Optional[asyncio.Task] = None
 
     async def enqueue(self, payload: Dict[str, Any]) -> ProcessingQueueDTO:
-        """processing_queue 테이블에 항목을 추가한다."""
+        """큐에 항목을 추가하고 백그라운드 워커를 보장한다."""
         if not payload:
             raise MCPQueueError("비어 있는 payload는 큐에 추가할 수 없습니다.")
 
@@ -61,207 +62,157 @@ class MCPService:
         payload["trace_id"] = trace_id
         payload.setdefault("queued_at", datetime.utcnow().isoformat())
 
-        with session_scope() as session:
-            existing = (
-                session.query(ProcessingQueueTable)
-                .filter(ProcessingQueueTable.trace_id == trace_id)
-                .one_or_none()
-            )
-            if existing:
-                raise MCPQueueError(f"{trace_id} 는 이미 큐에 존재합니다.")
-
-            entry = ProcessingQueueTable(
-                trace_id=trace_id,
-                payload=payload,
-                status="pending",
-                attempt_count=0,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
-            )
-            session.add(entry)
-            session.flush()
-            dto = ProcessingQueueDTO.model_validate(entry)
-            return dto
+        entry_id = uuid4().int & 0x7FFFFFFF
+        entry = QueueEntry(id=entry_id, trace_id=trace_id, payload=payload.copy())
+        self._entries[entry_id] = entry
+        await self._queue.put(entry_id)
+        self._ensure_worker_started()
+        return ProcessingQueueDTO.model_validate(entry)
 
     async def process_next(self) -> Optional[RemediationResult]:
-        """큐에서 다음 항목을 꺼내 LLM까지 처리한다."""
-        with session_scope() as session:
-            record = (
-                session.query(ProcessingQueueTable)
-                .filter(ProcessingQueueTable.status.in_(["pending", "error"]))
-                .order_by(ProcessingQueueTable.created_at)
-                .first()
-            )
-            if not record:
-                return None
-
-            job_id, payload, manual_path = self._prepare_job_record(session, record)
-
-        return await self._execute_job(job_id, payload, manual_path)
+        """수동으로 큐에서 다음 항목을 처리한다."""
+        entry = self._next_pending_entry()
+        if not entry:
+            return None
+        return await self._run_entry(entry)
 
     async def process_job(self, queue_id: int) -> Optional[RemediationResult]:
         """특정 큐 ID를 즉시 처리한다."""
-        with session_scope() as session:
-            record = session.get(ProcessingQueueTable, queue_id)
-            if not record or record.status not in ("pending", "error"):
-                return None
-            job_id, payload, manual_path = self._prepare_job_record(session, record)
-
-        return await self._execute_job(job_id, payload, manual_path)
+        entry = self._entries.get(queue_id)
+        if not entry or entry.status not in ("pending", "error"):
+            return None
+        return await self._run_entry(entry)
 
     async def get_status(self) -> Dict[str, Any]:
         """큐 및 데드레터 현황을 반환."""
-        with session_scope() as session:
-            pending = (
-                session.query(func.count(ProcessingQueueTable.id))
-                .filter(ProcessingQueueTable.status == "pending")
-                .scalar()
-            )
-            processing = (
-                session.query(func.count(ProcessingQueueTable.id))
-                .filter(ProcessingQueueTable.status == "processing")
-                .scalar()
-            )
-            failed = (
-                session.query(func.count(ProcessingQueueTable.id))
-                .filter(ProcessingQueueTable.status == "error")
-                .scalar()
-            )
-            completed = (
-                session.query(func.count(ProcessingQueueTable.id))
-                .filter(ProcessingQueueTable.status == "done")
-                .scalar()
-            )
-            dead_letters = session.query(func.count(DeadLetterQueueTable.id)).scalar()
-
+        pending = sum(1 for entry in self._entries.values() if entry.status == "pending")
+        processing = sum(1 for entry in self._entries.values() if entry.status == "processing")
+        failed = sum(1 for entry in self._entries.values() if entry.status == "error")
+        completed = sum(1 for entry in self._entries.values() if entry.status == "done")
+        dead_letters = len(self._dead_letters)
         return {
-            "pending": pending or 0,
-            "processing": processing or 0,
-            "error": failed or 0,
-            "completed": completed or 0,
-            "dead_letters": dead_letters or 0,
+            "pending": pending,
+            "processing": processing,
+            "error": failed,
+            "completed": completed,
+            "dead_letters": dead_letters,
         }
 
-    def _prepare_job_record(
-        self,
-        session: Session,
-        record: ProcessingQueueTable,
-    ) -> tuple[int, Dict[str, Any], str]:
-        payload = record.payload or {}
+    async def _run_entry(self, entry: QueueEntry) -> RemediationResult:
+        entry.status = "processing"
+        entry.attempt_count += 1
+        entry.updated_at = datetime.utcnow()
+        payload = entry.payload
         manual_path = self._extract_manual_path(payload)
-
-        record.status = "processing"
-        record.attempt_count += 1
-        record.updated_at = datetime.utcnow()
-        session.flush()
-
-        return record.id, payload, manual_path
-
-    async def _execute_job(
-        self,
-        job_id: int,
-        payload: Dict[str, Any],
-        manual_path: str,
-    ) -> RemediationResult:
         try:
             manual_text = self.manual_repo.read_manual(manual_path)
             guidance = await self.llm_client.generate_guidance(payload, manual_text)
         except FileNotFoundError as exc:
-            await self._handle_failure(job_id, payload, f"메뉴얼 파일 없음: {exc}")
+            await self._handle_failure(entry, f"메뉴얼 파일 없음: {exc}")
             raise
         except MCPClientError as exc:
-            await self._handle_failure(job_id, payload, f"LLM 호출 실패: {exc}")
+            await self._handle_failure(entry, f"LLM 호출 실패: {exc}")
             raise
         except Exception as exc:
-            await self._handle_failure(job_id, payload, f"예상치 못한 오류: {exc}")
+            await self._handle_failure(entry, f"예상치 못한 오류: {exc}")
             raise
 
-        remediation = await self._persist_result(job_id, payload, guidance)
+        remediation = await self._persist_result(entry, payload, guidance)
         return remediation
 
     async def _handle_failure(
         self,
-        job_id: Optional[int],
-        payload: Dict[str, Any],
+        entry: QueueEntry,
         error_message: str,
     ) -> None:
         """실패한 항목을 업데이트하고 필요하면 데드레터 큐로 보낸다."""
-        if job_id is None:
-            logger.error("job_id 없음: %s", error_message)
-            return
+        entry.status = "error"
+        entry.last_error = error_message
+        entry.updated_at = datetime.utcnow()
 
-        with session_scope() as session:
-            record = session.get(ProcessingQueueTable, job_id)
-            if not record:
-                logger.error("기록되지 않은 job_id %s", job_id)
-                return
-
-            record.status = "error"
-            record.last_error = error_message
-            record.updated_at = datetime.utcnow()
-            attempt_count = record.attempt_count
-            session.flush()
-
-            if attempt_count >= self.max_attempts:
+        if entry.attempt_count >= self.max_attempts:
+            with session_scope() as session:
                 try:
                     self._write_dashboard_manual(
                         session,
-                        record.payload or {},
+                        entry.payload or {},
                         MANUAL_FAILURE_TEXT,
                     )
                 except MCPQueueError as exc:
                     logger.error("Failed to mark dashboard manual failure: %s", exc)
-                dead_letter = DeadLetterQueueTable(
-                    trace_id=record.trace_id,
-                    payload=record.payload,
+            self._dead_letters.append(
+                DeadLetterEntry(
+                    trace_id=entry.trace_id,
+                    payload=entry.payload,
                     error_message=error_message,
-                    failed_at=datetime.utcnow(),
                 )
-                session.add(dead_letter)
-                session.delete(record)
-                logger.error(
-                    "Job %s 이(가) %s회 실패하여 데드레터 큐로 이동했습니다.", job_id, attempt_count
-                )
+            )
+        else:
+            await self._queue.put(entry.id)
 
     async def _persist_result(
         self,
-        job_id: int,
+        entry: QueueEntry,
         payload: Dict[str, Any],
         guidance: Dict[str, Any],
     ) -> RemediationResult:
         """LLM 결과를 Dashboard 테이블에 저장하고 큐 상태를 완료로 변경."""
         trace_id = payload.get("trace_id", f"trace-{uuid4().hex}")
 
+        steps = guidance.get("steps")
+        if not isinstance(steps, list):
+            steps = []
+
+        summary = guidance.get("summary", "요약 없음")
+        manual_blob = self._render_manual_text(summary, steps)
         with session_scope() as session:
-            record = session.get(ProcessingQueueTable, job_id)
-            if not record:
-                raise MCPQueueError(f"job_id {job_id} 를 찾을 수 없습니다.")
-
-            record.status = "done"
-            record.last_error = None
-            record.updated_at = datetime.utcnow()
-
-            steps = guidance.get("steps")
-            if not isinstance(steps, list):
-                steps = []
-
-            summary = guidance.get("summary", "요약 없음")
-            manual_blob = self._render_manual_text(summary, steps)
             self._write_dashboard_manual(
                 session,
                 payload,
                 manual_blob,
                 overwrite_message=payload.get("message"),
             )
-            session.flush()
 
-            dto = RemediationResult(
-                trace_id=trace_id,
-                summary=summary,
-                steps=steps,
-                confidence=guidance.get("confidence"),
-            )
-            return dto
+        entry.status = "done"
+        entry.last_error = None
+        entry.updated_at = datetime.utcnow()
+
+        dto = RemediationResult(
+            trace_id=trace_id,
+            summary=summary,
+            steps=steps,
+            confidence=guidance.get("confidence"),
+        )
+        return dto
+
+    def _next_pending_entry(self) -> Optional[QueueEntry]:
+        for entry in sorted(self._entries.values(), key=lambda e: e.created_at):
+            if entry.status in ("pending", "error"):
+                return entry
+        return None
+
+    def _ensure_worker_started(self) -> None:
+        if self._worker_task and not self._worker_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._worker_task = loop.create_task(self._worker_loop())
+
+    async def _worker_loop(self) -> None:
+        while True:
+            entry_id = await self._queue.get()
+            entry = self._entries.get(entry_id)
+            if not entry or entry.status not in ("pending", "error"):
+                self._queue.task_done()
+                continue
+            try:
+                await self._run_entry(entry)
+            except Exception as exc:  # pragma: no cover - 로그 목적
+                logger.exception("Background MCP worker failed for %s: %s", entry.trace_id, exc)
+            finally:
+                self._queue.task_done()
 
     def _extract_manual_path(self, payload: Dict[str, Any]) -> str:
         manual_ref = payload.get("manual_reference") or {}

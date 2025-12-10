@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from uuid import uuid4
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -14,7 +14,10 @@ from app.DB.db_config import get_db_for_table
 from app.DB.table_dashboard import DashboardAlert
 from app.DB.use_dashboard import (
     DashboardHandledUpdateDTO,
+    DashboardAlertResponse,
+    DashboardEventCreateDTO,
     fetch_dashboard_alerts,
+    create_dashboard_alert,
     update_dashboard_alert_handled,
 )
 from app.logging_config import get_logger
@@ -83,8 +86,8 @@ class DashboardLLMResponse(BaseModel):
     confidence: str | None = None
 
 
-DEFAULT_TEST_MANUAL_PATH = os.getenv("MCP_TEST_MANUAL_PATH")
-DEFAULT_TEST_MANUAL_DIR = os.getenv("MCP_TEST_MANUAL_DIR", "docs/manuals")
+DEFAULT_TEST_MANUAL_PATH = os.getenv("MANUAL_PATH")
+DEFAULT_TEST_MANUAL_DIR = os.getenv("MANUAL_DIR", "docs/manuals")
 
 
 def _resolve_manual_path(alert: DashboardAlert) -> str:
@@ -92,7 +95,10 @@ def _resolve_manual_path(alert: DashboardAlert) -> str:
         return DEFAULT_TEST_MANUAL_PATH
     type_slug = (alert.type or "default").lower()
     manual_path = Path(DEFAULT_TEST_MANUAL_DIR) / f"{type_slug}.txt"
-    return str(manual_path)
+    try:
+        return str(manual_path.resolve())
+    except FileNotFoundError:
+        return str(manual_path)
 
 
 @router.post("/test/LLM", response_model=DashboardLLMResponse)
@@ -152,3 +158,36 @@ async def trigger_dashboard_llm(
         steps=result.steps,
         confidence=result.confidence,
     )
+
+
+class AIEventPayload(BaseModel):
+    event_type: str
+    timestamp: float
+    risk: float
+    spe: float
+    top3_t2: List[Dict[str, Any]]
+    top3_spe: List[Dict[str, Any]]
+    history: List[List[float]]
+    alarm_code: str | int
+    raw_data: List[float]
+    source: str
+
+
+@router.post("/events", response_model=DashboardAlertResponse, status_code=status.HTTP_201_CREATED)
+def ingest_ai_event(payload: AIEventPayload, db: Session = Depends(dashboard_db)):
+    """Accept AI sensor events and persist them as dashboard alerts."""
+    sensor_id = 1  # 실제 sensor_id 가 아직 AI 이벤트에 포함되지 않으므로, DB FK 제약을 만족시키기 위해 sensor 테이블에 존재하는 기본 ID(예: 1번 센서)를 임시로 사용합니다. 추후 이벤트에서 실제 sensor_id 를 전달하면 이 값을 교체하세요.
+    try:
+        create_payload = DashboardEventCreateDTO(
+            event_type=payload.event_type,
+            alarm_code=str(payload.alarm_code),
+            sensor_id=sensor_id,
+        )
+        return create_dashboard_alert(db, create_payload)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.exception("Failed to insert AI event into dashboard table")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to store event: {exc.__class__.__name__}",
+        ) from exc

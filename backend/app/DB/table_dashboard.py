@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Column, Integer, String, Text
+from datetime import datetime
+
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
 
 from .db_config import Base
 
@@ -16,3 +18,4 @@ class DashboardAlert(Base):
     mannual = Column(Text)
     message = Column(Text)
     ishandled = Column(Boolean, nullable=False, default=False, server_default="0")
+    timestamp = Column(DateTime, nullable=True, default=datetime.utcnow)

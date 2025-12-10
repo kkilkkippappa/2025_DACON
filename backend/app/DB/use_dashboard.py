@@ -84,6 +84,7 @@ def create_dashboard_alert(
         sensor_id=payload.sensor_id,
         type=payload.event_type,
         message=payload.alarm_code,
+        timestamp=datetime.utcnow(),
     )
     db.add(alert)
     db.commit()
@@ -94,7 +95,7 @@ def create_dashboard_alert(
 def _resolve_occurred_at(alert: DashboardAlert) -> str:
     """Attempt to expose a human-readable timestamp placeholder."""
 
-    candidate = getattr(alert, "occurred_at", None)
+    candidate = getattr(alert, "timestamp", None)
     if isinstance(candidate, datetime):
         return candidate.strftime("%Y-%m-%d %H:%M:%S")
     return f"Sensor #{alert.sensor_id}"

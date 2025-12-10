@@ -36,21 +36,6 @@ class DeadLetterQueueTable(Base):
     failed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
-class RemediationTable(Base):
-    """LLM 결과(권장 조치)를 저장하는 테이블."""
-
-    __tablename__ = "mcp_remediations"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    trace_id = Column(String(64), nullable=False, index=True)
-    manual_path = Column(String(255), nullable=False)
-    summary = Column(Text, nullable=False)
-    steps = Column(JSON, nullable=False)
-    llm_model = Column(String(64), nullable=False)
-    confidence = Column(String(32), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-
 class ProcessingQueueDTO(BaseModel):
     """API/서비스 계층에서 사용할 DTO."""
 
@@ -60,19 +45,5 @@ class ProcessingQueueDTO(BaseModel):
     status: str = "pending"
     attempt_count: int = 0
     last_error: Optional[str] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class RemediationDTO(BaseModel):
-    """LLM 권장 조치 DTO."""
-
-    id: Optional[int] = None
-    trace_id: str
-    manual_path: str
-    summary: str
-    steps: Optional[list[Dict[str, Any]]] = None
-    llm_model: str
-    confidence: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

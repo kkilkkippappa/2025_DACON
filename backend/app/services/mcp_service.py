@@ -6,24 +6,37 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from sqlalchemy import func
+from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict
 
 from app.DB.db_config import session_scope
 from app.DB.mcp_tables import (
     DeadLetterQueueTable,
     ProcessingQueueDTO,
     ProcessingQueueTable,
-    RemediationDTO,
-    RemediationTable,
 )
+from app.DB.table_dashboard import DashboardAlert
 from app.mcp.mcp_client_openai import MCPClientError, OpenAIMCPClient
 from app.mcp.mcp_manual import ManualRepository, get_manual_repository
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
+MANUAL_FAILURE_TEXT = "매뉴얼 생성 실패"
 
 
 class MCPQueueError(Exception):
     """Generic queue level error."""
+
+
+class RemediationResult(BaseModel):
+    """LLM 결과를 API/기타 계층에 전달하기 위한 DTO."""
+
+    trace_id: str
+    summary: str
+    steps: list[Dict[str, Any]]
+    confidence: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MCPService:
@@ -70,12 +83,8 @@ class MCPService:
             dto = ProcessingQueueDTO.model_validate(entry)
             return dto
 
-    async def process_next(self) -> Optional[RemediationDTO]:
+    async def process_next(self) -> Optional[RemediationResult]:
         """큐에서 다음 항목을 꺼내 LLM까지 처리한다."""
-        job_id: Optional[int] = None
-        payload: Dict[str, Any] = {}
-        manual_path: str = ""
-
         with session_scope() as session:
             record = (
                 session.query(ProcessingQueueTable)
@@ -86,30 +95,19 @@ class MCPService:
             if not record:
                 return None
 
-            record.status = "processing"
-            record.attempt_count += 1
-            record.updated_at = datetime.utcnow()
-            session.flush()
+            job_id, payload, manual_path = self._prepare_job_record(session, record)
 
-            job_id = record.id
-            payload = record.payload or {}
-            manual_path = self._extract_manual_path(payload)
+        return await self._execute_job(job_id, payload, manual_path)
 
-        try:
-            manual_text = self.manual_repo.read_manual(manual_path)
-            guidance = await self.llm_client.generate_guidance(payload, manual_text)
-        except FileNotFoundError as exc:
-            await self._handle_failure(job_id, payload, f"메뉴얼 파일 없음: {exc}")
-            raise
-        except MCPClientError as exc:
-            await self._handle_failure(job_id, payload, f"LLM 호출 실패: {exc}")
-            raise
-        except Exception as exc:
-            await self._handle_failure(job_id, payload, f"예상치 못한 오류: {exc}")
-            raise
+    async def process_job(self, queue_id: int) -> Optional[RemediationResult]:
+        """특정 큐 ID를 즉시 처리한다."""
+        with session_scope() as session:
+            record = session.get(ProcessingQueueTable, queue_id)
+            if not record or record.status not in ("pending", "error"):
+                return None
+            job_id, payload, manual_path = self._prepare_job_record(session, record)
 
-        remediation = await self._persist_result(job_id, payload, manual_path, guidance)
-        return remediation
+        return await self._execute_job(job_id, payload, manual_path)
 
     async def get_status(self) -> Dict[str, Any]:
         """큐 및 데드레터 현황을 반환."""
@@ -144,6 +142,43 @@ class MCPService:
             "dead_letters": dead_letters or 0,
         }
 
+    def _prepare_job_record(
+        self,
+        session: Session,
+        record: ProcessingQueueTable,
+    ) -> tuple[int, Dict[str, Any], str]:
+        payload = record.payload or {}
+        manual_path = self._extract_manual_path(payload)
+
+        record.status = "processing"
+        record.attempt_count += 1
+        record.updated_at = datetime.utcnow()
+        session.flush()
+
+        return record.id, payload, manual_path
+
+    async def _execute_job(
+        self,
+        job_id: int,
+        payload: Dict[str, Any],
+        manual_path: str,
+    ) -> RemediationResult:
+        try:
+            manual_text = self.manual_repo.read_manual(manual_path)
+            guidance = await self.llm_client.generate_guidance(payload, manual_text)
+        except FileNotFoundError as exc:
+            await self._handle_failure(job_id, payload, f"메뉴얼 파일 없음: {exc}")
+            raise
+        except MCPClientError as exc:
+            await self._handle_failure(job_id, payload, f"LLM 호출 실패: {exc}")
+            raise
+        except Exception as exc:
+            await self._handle_failure(job_id, payload, f"예상치 못한 오류: {exc}")
+            raise
+
+        remediation = await self._persist_result(job_id, payload, guidance)
+        return remediation
+
     async def _handle_failure(
         self,
         job_id: Optional[int],
@@ -168,6 +203,14 @@ class MCPService:
             session.flush()
 
             if attempt_count >= self.max_attempts:
+                try:
+                    self._write_dashboard_manual(
+                        session,
+                        record.payload or {},
+                        MANUAL_FAILURE_TEXT,
+                    )
+                except MCPQueueError as exc:
+                    logger.error("Failed to mark dashboard manual failure: %s", exc)
                 dead_letter = DeadLetterQueueTable(
                     trace_id=record.trace_id,
                     payload=record.payload,
@@ -184,10 +227,9 @@ class MCPService:
         self,
         job_id: int,
         payload: Dict[str, Any],
-        manual_path: str,
         guidance: Dict[str, Any],
-    ) -> RemediationDTO:
-        """LLM 결과를 DB에 저장하고 큐 상태를 완료로 변경."""
+    ) -> RemediationResult:
+        """LLM 결과를 Dashboard 테이블에 저장하고 큐 상태를 완료로 변경."""
         trace_id = payload.get("trace_id", f"trace-{uuid4().hex}")
 
         with session_scope() as session:
@@ -200,24 +242,25 @@ class MCPService:
             record.updated_at = datetime.utcnow()
 
             steps = guidance.get("steps")
-            if isinstance(steps, list):
-                steps_json: Any = steps  # type: ignore[assignment]
-            else:
-                steps_json = []
+            if not isinstance(steps, list):
+                steps = []
 
-            remediation = RemediationTable(
-                trace_id=trace_id,
-                manual_path=manual_path,
-                summary=guidance.get("summary", "요약 없음"),
-                steps=steps_json,
-                llm_model=guidance.get("model", self.llm_client.model),
-                confidence=guidance.get("confidence"),
-                created_at=datetime.utcnow(),
+            summary = guidance.get("summary", "요약 없음")
+            manual_blob = self._render_manual_text(summary, steps)
+            self._write_dashboard_manual(
+                session,
+                payload,
+                manual_blob,
+                overwrite_message=payload.get("message"),
             )
-            session.add(remediation)
             session.flush()
 
-            dto = RemediationDTO.model_validate(remediation)
+            dto = RemediationResult(
+                trace_id=trace_id,
+                summary=summary,
+                steps=steps,
+                confidence=guidance.get("confidence"),
+            )
             return dto
 
     def _extract_manual_path(self, payload: Dict[str, Any]) -> str:
@@ -226,6 +269,67 @@ class MCPService:
         if not path:
             raise MCPQueueError("manual_reference.path 값이 필요합니다.")
         return path
+
+    def _resolve_sensor_id(self, payload: Dict[str, Any]) -> int:
+        anomaly = payload.get("anomaly") or {}
+        sensor_id = anomaly.get("sensor_id") or payload.get("metadata", {}).get("sensor_id")
+        try:
+            return int(sensor_id)
+        except (TypeError, ValueError):
+            return 0
+
+    def _resolve_alert_type(self, payload: Dict[str, Any]) -> str:
+        metadata = payload.get("metadata") or {}
+        anomaly = payload.get("anomaly") or {}
+        return metadata.get("type") or anomaly.get("metric") or "alert"
+
+    def _resolve_message(self, payload: Dict[str, Any]) -> str:
+        anomaly = payload.get("anomaly") or {}
+        return json.dumps(anomaly, ensure_ascii=False)
+
+    def _render_manual_text(self, summary: str, steps: list[Dict[str, Any]]) -> str:
+        lines = [summary]
+        for idx, step in enumerate(steps, start=1):
+            order = step.get("order") or idx
+            action = step.get("action") or ""
+            note = step.get("note")
+            detail = f"{order}. {action}".strip()
+            if note:
+                detail = f"{detail} - {note}"
+            lines.append(detail)
+        return "\n".join(line for line in lines if line)
+
+    def _extract_dashboard_id(self, payload: Dict[str, Any]) -> int:
+        metadata = payload.get("metadata") or {}
+        candidate = metadata.get("dashboard_id") or metadata.get("alert_id")
+        if candidate is None:
+            raise MCPQueueError("metadata.dashboard_id 값이 필요합니다.")
+        try:
+            return int(candidate)
+        except (TypeError, ValueError):
+            raise MCPQueueError("metadata.dashboard_id 는 정수여야 합니다.")
+
+    def _write_dashboard_manual(
+        self,
+        session: Session,
+        payload: Dict[str, Any],
+        manual_text: str,
+        overwrite_message: Optional[str] = None,
+    ) -> DashboardAlert:
+        dashboard_id = self._extract_dashboard_id(payload)
+        alert = (
+            session.query(DashboardAlert)
+            .filter(DashboardAlert.id == dashboard_id)
+            .one_or_none()
+        )
+        if not alert:
+            raise MCPQueueError(f"dashboard_id {dashboard_id} 를 찾을 수 없습니다.")
+
+        alert.mannual = manual_text
+        if overwrite_message is not None:
+            alert.message = overwrite_message
+        alert.ishandled = False
+        return alert
 
 
 _mcp_service: Optional[MCPService] = None

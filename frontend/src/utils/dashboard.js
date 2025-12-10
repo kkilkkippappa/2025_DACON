@@ -1,24 +1,27 @@
+const stripQuotes = (value = '') => String(value || '').trim().replace(/^['"]|['"]$/g, '');
+
 const normalizeHost = (host = '') => {
-  const trimmed = String(host || '').trim();
+  const trimmed = stripQuotes(host);
   if (!trimmed) return 'http://localhost';
   return trimmed.replace(/\/$/, '');
 };
 
 const normalizePath = (path = '') => {
-  if (!path) return '/';
-  return path.startsWith('/') ? path : `/${path}`;
+  const normalized = stripQuotes(path);
+  if (!normalized) return '/';
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
 };
 
 export const buildApiBase = (host, port, path = '/') => {
   const safeHost = normalizeHost(host);
-  const safePort = String(port ?? '').trim();
+  const safePort = stripQuotes(port);
   const base = safePort ? `${safeHost}:${safePort}` : safeHost;
   return `${base}${normalizePath(path)}`;
 };
 
 export const buildEndpoint = (base, suffix = '') => {
   const safeBase = normalizeHost(base);
-  let normalizedSuffix = suffix || '';
+  let normalizedSuffix = stripQuotes(suffix || '');
   if (!normalizedSuffix.startsWith('/')) {
     normalizedSuffix = `/${normalizedSuffix}`;
   }

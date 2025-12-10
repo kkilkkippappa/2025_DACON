@@ -13,7 +13,7 @@ load_dotenv()
 
 Base = declarative_base()
 
-DEFAULT_SCHEMA = "sensor_data"
+DEFAULT_SCHEMA = os.getenv("DB_NAME", "sensor_data")
 DEFAULT_TABLE = "sensor"
 
 

@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:dashboard-api": "npm run build && start-server-and-test \"uvicorn app.main:app --app-dir ../backend\" http://127.0.0.1:8000/dashboard/send \"vitest run tests/dashboard.api.test.js\""
+    "test:dashboard-api": "vitest run tests/dashboard.api.test.js"
   },
   "dependencies": {
     "start-server-and-test": "^2.1.3",

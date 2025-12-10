@@ -231,8 +231,27 @@
 - **Vite 지원**: `package.json` 및 `vite.config.js` 제공 (선택사항)
 - **빌드 도구 없이 실행 가능**: CDN 방식으로 바로 실행 가능
 
+## 10. FastAPI × Vue 연동 계획
+
+### 10.1 API 게이트웨이 (FastAPI)
+- `/dashboard` 프리픽스를 유지한 채 Vue가 호출할 REST 엔드포인트를 제공한다.
+- 현재는 스펙 정의 단계이므로 `GET /dashboard/alerts`, `GET /dashboard/stats`, `POST /dashboard/acknowledge` 같은 라우트의 골격만 마련하고, 응답 페이로드는 샘플 JSON으로 대체한다.
+- 실제 DB 스키마와 JSON 포맷이 확정되면 위 라우트의 응답을 교체하고, 별도 서비스 계층에서 데이터베이스 접근 로직을 구현한다.
+
+### 10.2 Vue 데이터 흐름
+- Vue 컴포넌트는 `fetch('/dashboard/...')` 또는 `axios` 호출을 통해 FastAPI에서 제공하는 데이터를 수신한다.
+- 현재 단계에서는 mock 응답을 사용하여 UI 상태만 구축하고, API 스펙이 확정되면 동일한 인터페이스로 실제 데이터를 연결한다.
+- 데이터 구조(예: Alert 객체 필드) 정의가 완료되면 전역 타입 또는 composable을 통해 재사용하도록 설계한다.
+
+### 10.3 CORS 및 프록시 설정
+- FastAPI: `CORSMiddleware`를 추가하여 `http://localhost:5173` 등 프론트 개발 서버를 `allow_origins`에 포함하고, `allow_methods`, `allow_headers`를 전체 허용으로 설정한다.
+- Vue/Vite: `vite.config.js`의 `server.proxy`에 `/dashboard`: `http://localhost:8000`을 지정하면, 개발 중에도 동일한 origin에서 호출하는 것처럼 API 요청을 전송할 수 있다.
+
+### 10.4 배포 시 정적 자산 서빙
+- `npm run build` 결과물(`frontend/dist`)을 FastAPI에 `StaticFiles(directory="frontend/dist", html=True)`로 mount하여 `/dashboard` 경로에서 Vue SPA를 제공한다.
+- 이렇게 하면 FastAPI 단일 서버가 API와 정적 대시보드 모두를 처리하므로 운영 배포 구성이 단순해진다.
+
 ---
 
 **작성일**: 2025-12-05  
 **버전**: 2.0 (Vue.js 전환)
-

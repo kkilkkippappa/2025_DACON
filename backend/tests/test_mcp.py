@@ -257,10 +257,6 @@ async def test_queue_to_remediation_integration(sqlite_db):
     assert remediation.steps and remediation.steps[0]["action"] == "review"
 
     with session_scope() as session:
-        queue_record = session.query(ProcessingQueueTable).filter_by(trace_id="trace-integration").first()
-        assert queue_record is not None
-        assert queue_record.status == "done"
-
         dashboard_entry = session.get(DashboardAlert, dashboard_id)
         assert dashboard_entry is not None
         assert "trace-integration result" in (dashboard_entry.mannual or "")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict
 
 from dotenv import load_dotenv
@@ -176,6 +177,7 @@ class OpenAIMCPClient:
 
 
 '''
+        self.prompt_dump_dir = Path(os.getenv('PROMPT_DUMP_DIR', 'backend/prompt')).resolve()
         timeout = int(os.getenv("MCP_OPENAI_TIMEOUT", "30"))
         self.client = AsyncOpenAI(timeout=timeout)
 
@@ -212,15 +214,8 @@ class OpenAIMCPClient:
         message = payload.get("message", "")
         event_type = metadata.get("event_type", "").upper() or "UNKNOWN"
         manual_excerpt = manual_text[:4000]
+        sensor_context = payload.get("sensor_context", "")
 
-        context = {
-            "trace_id": trace_id,
-            "event_type": event_type,
-            "message": message,
-            "anomaly": anomaly,
-            "ai_error": ai_error,
-            "metadata": metadata,
-        }
 
         prompt = (
             f"{self.prompt}\n"
@@ -246,11 +241,19 @@ class OpenAIMCPClient:
             f"{json.dumps(ai_error, ensure_ascii=False, indent=2)}\n"
             "[METADATA]:\n"
             f"{json.dumps(metadata, ensure_ascii=False, indent=2)}\n"
+        )
+        if sensor_context:
+            prompt += (
+                "[SENSOR ERROR CASE]:\n"
+                f"{sensor_context}\n"
+            )
+        prompt += (
             "[MANUAL SNIPPET]:\n"
             f"{manual_excerpt}\n"
             "-----\n"
-            "위 자료만 사용하여 지정된 WARNING/ALARM 템플릿을 정확히 채워라.\n"
-            "어떠한 추가 추론이나 자료 생성도 금지된다.\n"
+            "? ??? ???? ??? WARNING/ALARM ???? ??? ???.\n"
+            "??? ?? ???? ?? ??? ????.\n"
+
         )
 
         #디버그용 메서드 : write_prompt_to_file
@@ -312,10 +315,12 @@ class OpenAIMCPClient:
             "model": self.model,
         }
 
-    def write_prompt_to_file(self, prompt):
+    def write_prompt_to_file(self, prompt: str) -> None:
         now = datetime.datetime.now()
         file_name = f'prompt_{now.strftime("%Y%m%d%H%M%S")}.txt'
-        file_path = f"C:\\Users\\subin\\OneDrive\\바탕 화면\\funny software\\2025_Hackathon\\backend\\docs\\prompt\\{file_name}"
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(prompt)
-
+        try:
+            self.prompt_dump_dir.mkdir(parents=True, exist_ok=True)
+            file_path = self.prompt_dump_dir / file_name
+            file_path.write_text(prompt, encoding="utf-8")
+        except OSError:
+            pass

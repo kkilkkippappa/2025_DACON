@@ -209,12 +209,33 @@ async def test_openai_client_fallback(monkeypatch: pytest.MonkeyPatch):
     assert guidance["steps"]
 
 
+def test_build_prompt_includes_sensor_context(monkeypatch: pytest.MonkeyPatch):
+    os.environ["OPENAI_API_KEY"] = "test-key"
+
+    def fake_client_factory(*args, **kwargs):
+        return DummyAsyncOpenAI()
+
+    monkeypatch.setattr("app.mcp.mcp_client_openai.AsyncOpenAI", fake_client_factory)
+    client = OpenAIMCPClient()
+    payload = {
+        "trace_id": "trace-sensor",
+        "sensor_context": "XMEAS 5 → feed stream abnormal",
+        "metadata": {"event_type": "warning"},
+    }
+    prompt = client._build_prompt(payload, "manual body")
+    assert "XMEAS 5 → feed stream abnormal" in prompt
+    assert "[MANUAL SNIPPET]" in prompt
+
+
 class DummyManualRepo:
     def __init__(self, content: str) -> None:
         self.content = content
 
     def read_manual(self, manual_path: str) -> str:
         return self.content
+
+    def render_sensor_context(self, sensor_tokens):
+        return ""
 
 
 class DummyLLM:

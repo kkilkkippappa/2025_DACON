@@ -4,7 +4,7 @@ import json
 import asyncio
 from collections import deque
 from datetime import datetime
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Deque, Dict, List, Optional
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -106,6 +106,11 @@ class MCPService:
         manual_path = self._extract_manual_path(payload)
         try:
             manual_text = self.manual_repo.read_manual(manual_path)
+            sensor_tokens = self._collect_sensor_tokens(payload)
+            sensor_context = self.manual_repo.render_sensor_context(sensor_tokens)
+            if sensor_context:
+                payload["sensor_context"] = sensor_context
+                payload["sensor_targets"] = sensor_tokens
             guidance = await self.llm_client.generate_guidance(payload, manual_text)
         except FileNotFoundError as exc:
             await self._handle_failure(entry, f"메뉴얼 파일 없음: {exc}")
@@ -228,6 +233,32 @@ class MCPService:
             return int(sensor_id)
         except (TypeError, ValueError):
             return 0
+
+    def _collect_sensor_tokens(self, payload: Dict[str, Any]) -> List[str]:
+        anomaly = payload.get("anomaly") or {}
+        metadata = payload.get("metadata") or {}
+        raw_tokens: List[str] = []
+        primary_keys = ("sensor_id", "sensor", "sensor_code")
+        for key in primary_keys:
+            value = anomaly.get(key)
+            if value is None:
+                value = metadata.get(key)
+            if value is not None:
+                raw_tokens.append(str(value))
+        for bucket in ("top3_spe", "top3_t2", "top_sensors"):
+            values = anomaly.get(bucket)
+            if isinstance(values, list):
+                raw_tokens.extend(str(val) for val in values if val is not None)
+
+        seen = set()
+        ordered: List[str] = []
+        for token in raw_tokens:
+            normalized = token.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
 
     def _resolve_alert_type(self, payload: Dict[str, Any]) -> str:
         metadata = payload.get("metadata") or {}

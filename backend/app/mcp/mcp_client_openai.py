@@ -253,6 +253,8 @@ class OpenAIMCPClient:
             "어떠한 추가 추론이나 자료 생성도 금지된다.\n"
         )
 
+        #디버그용 메서드 : write_prompt_to_file
+        self.write_prompt_to_file(prompt)
         return prompt
 
     def _parse_response(self, response: Any) -> Dict[str, Any]:
@@ -314,6 +316,6 @@ class OpenAIMCPClient:
         now = datetime.datetime.now()
         file_name = f'prompt_{now.strftime("%Y%m%d%H%M%S")}.txt'
         file_path = f"C:\\Users\\subin\\OneDrive\\바탕 화면\\funny software\\2025_Hackathon\\backend\\docs\\prompt\\{file_name}"
-        with open(file_path, 'w') as f:
+        with open(file_path, 'w', encoding='utf-8') as f:
             f.write(prompt)
 

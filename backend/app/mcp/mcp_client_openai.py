@@ -7,6 +7,8 @@ from typing import Any, Dict
 from dotenv import load_dotenv
 from openai import AsyncOpenAI, OpenAIError
 
+import datetime
+
 load_dotenv()
 
 
@@ -307,3 +309,11 @@ class OpenAIMCPClient:
             "confidence": "low",
             "model": self.model,
         }
+
+    def write_prompt_to_file(self, prompt):
+        now = datetime.datetime.now()
+        file_name = f'prompt_{now.strftime("%Y%m%d%H%M%S")}.txt'
+        file_path = f"C:\\Users\\subin\\OneDrive\\바탕 화면\\funny software\\2025_Hackathon\\backend\\docs\\prompt\\{file_name}"
+        with open(file_path, 'w') as f:
+            f.write(prompt)
+

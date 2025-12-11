@@ -170,7 +170,7 @@ def make_snapshot_reader(sensor_cols):
         if len(sensor_cols) == 0:
             raise RuntimeError("Sensor dataset is empty.")
         if cursor >= len(sensor_cols):
-            cursor = 0
+            raise StopIteration("All sensor snapshots processed.")
         snap = sensor_cols[cursor]
         cursor += 1
         return snap
@@ -180,7 +180,11 @@ def make_snapshot_reader(sensor_cols):
 
 def warn_loop(get_snapshot, history_buffer, scaler, pca, log, threshold_t2, threshold_spe):
     while True:
-        snap = get_snapshot()
+        try:
+            snap = get_snapshot()
+        except StopIteration:
+            print("Sensor data exhausted, stopping warn loop.")
+            break
         history_buffer.append(snap.tolist())
         snap_scaled = scaler.transform(snap.reshape(1, -1))
 
@@ -212,6 +216,9 @@ def warn_loop(get_snapshot, history_buffer, scaler, pca, log, threshold_t2, thre
                     send_event_to_mcp(alert_id, event)
 
         time.sleep(3)
+        print(">>> ALARM TEST RUN")
+        trigger_alarm(code=101, log=log, history_buffer=history_buffer, scaler=scaler, pca=pca)
+
 
 
 def analyze_alarm_snapshot(pca, scaler, history_buffer):
@@ -227,7 +234,8 @@ def analyze_alarm_snapshot(pca, scaler, history_buffer):
 def trigger_alarm(code, log: EventLog, history_buffer, scaler, pca):
     if not history_buffer:
         raise ValueError("history_buffer is empty")
-    latest_snap = np.array(history_buffer[-1]).reshape(1, -1)
+    latest_raw = history_buffer[-1]
+    latest_snap = np.array(latest_raw).reshape(1, -1)
     analysis = analyze_alarm_snapshot(pca, scaler, history_buffer)
     event = {
         "event_type": "ALARM",
@@ -238,7 +246,7 @@ def trigger_alarm(code, log: EventLog, history_buffer, scaler, pca):
         "top3_spe": analysis["top3_spe"],
         "history": list(history_buffer),
         "alarm_code": code,
-        "raw_data": latest_snap.tolist(),
+        "raw_data": list(latest_raw),
         "source": "machine",
     }
     event = json.loads(json.dumps(event, default=float))
@@ -263,21 +271,18 @@ def run_pipeline(normal_csv: str = "normal.csv", test_csv: str = "test2.csv"):
         target=warn_loop,
         args=(get_snapshot, history_buffer, scaler, pca, log, threshold_t2, threshold_spe),
     )
-    warn_thread.daemon = True
+    warn_thread.daemon = False  # keep warn loop alive until join() completes
+    warn_thread.start()
+    time.sleep(15)  # warn_loop 조금 돌리고
+
     print(">>> ALARM TEST RUN")
     trigger_alarm(code=101, log=log, history_buffer=history_buffer, scaler=scaler, pca=pca)
 
     print(">>> LAST LOG")
     print(log.logs[-1])
 
-    warn_thread.start()
-    time.sleep(15)  # warn_loop 조금 돌리고
-
-
-
     try:
         warn_thread.join()
-
     except KeyboardInterrupt:
         print("Stopping warn loop...")
 
